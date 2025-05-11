@@ -5,6 +5,14 @@ public class AckleyFunction implements IObjectiveFunction {
     private double b = 0.2;
     private double c = 2 * Math.PI;
 
+    public AckleyFunction() {}
+
+    public AckleyFunction(int a, double b, double c) {
+        this.a = a;
+        this.b = b;
+        this.c = c;
+    }
+
     /**
      * Computes the Ackley function for a given point.
      *

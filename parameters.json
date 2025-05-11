@@ -1,0 +1,8 @@
+{
+  "populationSize":  30,
+  "dimensions": 2,
+  "maxIterations":  200,
+  "searchSpaceMin": -10.0,
+  "searchSpaceMax":  10.0,
+  "enableLogging": true
+}

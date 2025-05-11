@@ -1,20 +1,22 @@
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import java.util.Arrays;
 import java.util.Random;
 import java.util.logging.Level;
-import java.util.logging.Logger;
+
+import static java.lang.Math.*;
 
 public class MRFOOptimizer implements IOptimizer {
 
-    private final Logger logger = Logger.getLogger(MRFOOptimizer.class.getName());
+    private final Logger logger = LoggerFactory.getLogger(this.getClass());
 
-    // Algorithm parameters
     private final int populationSize;
     private final int dimensions;
     private final int maxIterations;
     private final double searchSpaceMin;
     private final double searchSpaceMax;
 
-    // State variables
     private int currentIteration = 0;
     private double[][] population;  // Positions of each individual (Manta Ray)
     private double[] bestSolution;  // Best solution found so far
@@ -22,26 +24,35 @@ public class MRFOOptimizer implements IOptimizer {
 
     private final Random rand;
     private final IObjectiveFunction objectiveFunction;
+    private final boolean isLoggingEnabled;
+
+    public double[] getBestSolution() {
+        return bestSolution;
+    }
+
+    public double getBestFitness() {
+        return bestFitness;
+    }
+
+    public int getCurrentIteration() {
+        return currentIteration;
+    }
 
     /**
      * Constructor to initialize the optimizer with its parameters.
      *
-     * @param populationSize  Number of manta rays (solutions)
-     * @param dimensions      Dimensionality of the search space
-     * @param maxIterations   Maximum number of iterations
-     * @param searchSpaceMin  Lower bound of the search space
-     * @param searchSpaceMax  Upper bound of the search space
+     * @param config            The configuration for the optimizer
      * @param objectiveFunction The evaluation function
      */
-    public MRFOOptimizer(int populationSize, int dimensions, int maxIterations,
-                         double searchSpaceMin, double searchSpaceMax, IObjectiveFunction objectiveFunction) {
-        this.populationSize = populationSize;
-        this.dimensions = dimensions;
-        this.maxIterations = maxIterations;
-        this.searchSpaceMin = searchSpaceMin;
-        this.searchSpaceMax = searchSpaceMax;
+    public MRFOOptimizer(MRFOConfig config, IObjectiveFunction objectiveFunction) {
+        this.populationSize = config.populationSize;
+        this.dimensions = config.dimensions;
+        this.maxIterations = config.maxIterations;
+        this.searchSpaceMin = config.searchSpaceMin;
+        this.searchSpaceMax = config.searchSpaceMax;
         this.rand = new Random(1412478894212413894L);
         this.objectiveFunction = objectiveFunction;
+        this.isLoggingEnabled = config.enableLogging;
     }
 
     /**
@@ -51,13 +62,15 @@ public class MRFOOptimizer implements IOptimizer {
     @Override
     public void initialize() {
         population = new double[populationSize][dimensions];
-        // Randomly initialize each individual in the population.
+
+        // Randomly initialize each individual in the population
         for (int i = 0; i < populationSize; i++) {
             for (int d = 0; d < dimensions; d++) {
-                population[i][d] = searchSpaceMin + (searchSpaceMax - searchSpaceMin) * rand.nextDouble();
+                population[i][d] = generateRandomPosition();
             }
         }
-        // Determine the best solution in the initial population.
+
+        // Determine the best solution in the initial population
         bestSolution = new double[dimensions];
         for (int i = 0; i < populationSize; i++) {
             double fitness = objectiveFunction.evaluate(population[i]);
@@ -66,6 +79,7 @@ public class MRFOOptimizer implements IOptimizer {
                 System.arraycopy(population[i], 0, bestSolution, 0, dimensions);
             }
         }
+
         currentIteration = 0;
     }
 
@@ -81,34 +95,36 @@ public class MRFOOptimizer implements IOptimizer {
         // Update each individual's position using the MRFO update rule.
         for (int i = 0; i < populationSize; i++) {
             double r = rand.nextDouble();
-            double A = 2.0 * somersaultFactor * r - somersaultFactor;
-            double C = 2.0 * r;
-
             for (int d = 0; d < dimensions; d++) {
-                // Chain Foraging update equation:
-                // X_new = bestSolution[d] - A * |C * bestSolution[d] - X_current|
-                double newPos = bestSolution[d] - A * Math.abs(C * bestSolution[d] - population[i][d]);
+                double newPos;
+
+                if (r < 0.5) {
+                    newPos = cycloneForaging(i, d, r);
+                } else {
+                    newPos = chainForaging(i, d);
+                }
+
                 // Ensure the new position remains within bounds.
                 newPos = Math.max(searchSpaceMin, Math.min(newPos, searchSpaceMax));
                 population[i][d] = newPos;
             }
-        }
 
-        // Evaluate the updated population and update the best found solution.
-        for (int i = 0; i < populationSize; i++) {
-            double fitness = objectiveFunction.evaluate(population[i]);
-            if (fitness < bestFitness) {
-                bestFitness = fitness;
-                System.arraycopy(population[i], 0, bestSolution, 0, dimensions);
+            evaluateFitness(i);
+
+            for (int d = 0; d < dimensions; d++) {
+                double newPos = somersaultForaging(somersaultFactor, i, d);
+
+                // Ensure the new position remains within bounds.
+                newPos = Math.max(searchSpaceMin, Math.min(newPos, searchSpaceMax));
+                population[i][d] = newPos;
             }
+
+            evaluateFitness(i);
         }
 
-        logger.log(Level.INFO, "Iteration: {0}", currentIteration);
-        logger.log(Level.INFO, "Global-Best-Solution: {0}", Arrays.toString(bestSolution));
-        logger.log(Level.INFO, "Fitness: {0}", bestFitness);
-        //logger.log(Level.INFO, "Auswahlentscheidungen: {0}", );
-        //logger.log(Level.INFO, "Paramteränderungen: {0}", );
-        logger.log(Level.INFO, "");
+        if (isLoggingEnabled) {
+            logIteration();
+        }
 
         currentIteration++;
     }
@@ -123,15 +139,76 @@ public class MRFOOptimizer implements IOptimizer {
         return currentIteration >= maxIterations;
     }
 
-    public double[] getBestSolution() {
-        return bestSolution;
+    /**
+     * @param i the individual
+     * @param d the dimension
+     * @return the new chain foraging position
+     */
+    private double chainForaging(int i, int d) {
+        double r = rand.nextDouble();
+        double alpha = 2 * r * sqrt(abs(log(r)));
+
+        if (i == 0) {
+            return population[i][d] + r * (bestSolution[d] - population[i][d]) + alpha * (bestSolution[d] - population[i][d]);
+        } else {
+            return population[i][d] + r * (population[i - 1][d] - population[i][d]) + alpha * (bestSolution[d] - population[i][d]);
+        }
     }
 
-    public double getBestFitness() {
-        return bestFitness;
+    /**
+     * @param i the individual
+     * @param d the dimension
+     * @param r a random number between 0 and 1
+     * @return the new cyclone position
+     */
+    private double cycloneForaging(int i, int d, double r) {
+        double newBestSolution = bestSolution[d];
+        double r1 = rand.nextDouble();
+        double beta = 2 * exp((r1 * (maxIterations - currentIteration + 1)) / maxIterations) * sin(2 * PI * r1);
+
+        if ((double) currentIteration / maxIterations < r) {
+            newBestSolution = generateRandomPosition();
+        }
+
+        if (i == 0) {
+            return newBestSolution + r * (bestSolution[d] - population[i][d]) + beta * (bestSolution[d] - population[i][d]);
+        } else {
+            return newBestSolution + r * (population[i - 1][d] - population[i][d]) + beta * (bestSolution[d] - population[i][d]);
+        }
     }
 
-    public int getCurrentIteration() {
-        return currentIteration;
+    /**
+     * @param s the somersault factor
+     * @param i the individual
+     * @param d the dimension
+     * @return the new somersault position
+     */
+    private double somersaultForaging(double s, int i, int d) {
+        return population[i][d] + s * (rand.nextDouble() * bestSolution[d] - rand.nextDouble() * population[i][d]);
+    }
+
+    /**
+     * Generates a random position
+     *
+     * @return a random position
+     */
+    private double generateRandomPosition() {
+        return searchSpaceMin + (searchSpaceMax - searchSpaceMin) * rand.nextDouble();
+    }
+
+    /**
+     * @param i the individual
+     */
+    private void evaluateFitness(int i) {
+        // Evaluate the updated population and update the best found solution.
+        double fitness = objectiveFunction.evaluate(population[i]);
+        if (fitness < bestFitness) {
+            bestFitness = fitness;
+            System.arraycopy(population[i], 0, bestSolution, 0, dimensions);
+        }
+    }
+
+    private void logIteration() {
+        logger.info("Iteration: {}, global best solution: {}, fitness: {}", currentIteration, Arrays.toString(bestSolution), bestFitness);
     }
 }
